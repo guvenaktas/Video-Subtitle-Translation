@@ -1,0 +1,128 @@
+import os
+from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip, AudioFileClip
+import speech_recognition as sr
+from googletrans import Translator
+from moviepy.config import change_settings
+import spacy
+
+change_settings({"IMAGEMAGICK_BINARY": r"C:\Program Files\ImageMagick-7.1.1-Q16-HDRI\magick.exe"})
+
+# spaCy modelini yükleme
+nlp = spacy.load("en_core_web_sm")
+
+def extract_audio_from_video(video_file, audio_file):
+    video = VideoFileClip(video_file)
+    video.audio.write_audiofile(audio_file)
+
+def recognize_speech(audio_file, segment_length=10):
+    r = sr.Recognizer()
+    audio = AudioFileClip(audio_file)
+    audio_duration = audio.duration
+    segments = []
+
+    for start_time in range(0, int(audio_duration), segment_length):
+        end_time = min(start_time + segment_length, audio_duration)
+        segment = audio.subclip(start_time, end_time)
+        segment_file = f'segment_{start_time}_{end_time}.wav'
+        segment.write_audiofile(segment_file)
+        segments.append((segment_file, start_time, end_time))
+    
+    recognized_texts = []
+    for segment in segments:
+        segment_file, start_time, end_time = segment
+        with sr.AudioFile(segment_file) as source:
+            r.adjust_for_ambient_noise(source)
+            print('Processing audio segment:', segment_file)
+            audio_text = r.record(source)
+        try:
+            text = r.recognize_google(audio_text, language="en-US")
+            print('Recognized text:', text)
+            recognized_texts.append((text, start_time, end_time))
+        except sr.RequestError as e:
+            print('API error:', str(e))
+        except sr.UnknownValueError:
+            print('Unable to recognize audio')
+    
+    return recognized_texts
+
+def translate_texts(texts, target_language='tr'):
+    translator = Translator()
+    translated_texts = []
+    for text, start_time, end_time in texts:
+        # Özel isimleri tanıma
+        doc = nlp(text)
+        entities = {ent.text: ent.label_ for ent in doc.ents}
+        
+        # Metni çevirme
+        translation = translator.translate(text, dest=target_language).text
+        
+        # Çevrilen metindeki özel isimleri koruma
+        for entity in entities:
+            if entities[entity] in ['PERSON', 'GPE', 'ORG']:
+                translation = translation.replace(translator.translate(entity, dest=target_language).text, entity)
+        
+        translated_texts.append((translation, start_time, end_time))
+        print('Original:', text)
+        print('Translated:', translation)
+    return translated_texts
+
+def create_subtitle_file(translations, subtitle_file):
+    with open(subtitle_file, 'w', encoding='utf-8') as f:
+        for i, (translation, start_time, end_time) in enumerate(translations):
+            f.write(f"{i+1}\n")
+            f.write(f"{format_time(start_time)} --> {format_time(end_time)}\n")
+            f.write(f"{translation}\n\n")
+
+def format_time(seconds):
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = int(seconds % 60)
+    ms = int((seconds - int(seconds)) * 1000)
+    return f"{h:02}:{m:02}:{s:02},{ms:03}"
+
+def add_subtitles_to_video(video_file, subtitle_file, output_video_with_subs):
+    video = VideoFileClip(video_file)
+    subtitles = open(subtitle_file, 'r', encoding='utf-8').read()
+    subs = [s.strip().split('\n') for s in subtitles.split('\n\n') if s.strip()]
+
+    def make_textclip(txt):
+        return TextClip(txt, fontsize=24, color='white', size=video.size, bg_color='black', method='caption')
+
+    sub_clips = []
+    for sub in subs:
+        index, time_range, text = sub
+        start_time, end_time = time_range.split(' --> ')
+        start_time = sum(float(x) * 60 ** i for i, x in enumerate(reversed(start_time.replace(',', '.').split(':'))))
+        end_time = sum(float(x) * 60 ** i for i, x in enumerate(reversed(end_time.replace(',', '.').split(':'))))
+        txt_clip = make_textclip(text).set_start(start_time).set_end(end_time).set_pos(('center', 'bottom'))
+        sub_clips.append(txt_clip)
+
+    video_with_subs = CompositeVideoClip([video] + sub_clips)
+    video_with_subs.write_videofile(output_video_with_subs, codec='libx264')
+
+if __name__ == "__main__":
+    video_file = 'video.mp4'
+    audio_file = 'audio.wav'
+    subtitle_file = 'subtitles.srt'
+    output_video_with_subs = 'video_with_subs.mp4'
+
+    # Videodan ses çıkarma
+    extract_audio_from_video(video_file, audio_file)
+
+    # Sesi segmentlere bölme ve tanıma
+    recognized_texts = recognize_speech(audio_file)
+
+    # Tanınan metinleri bir dosyaya yazma
+    recognized_text_file = 'recognized_texts.txt'
+    with open(recognized_text_file, 'w', encoding='utf-8') as f:
+        for text, start_time, end_time in recognized_texts:
+            f.write(f"{format_time(start_time)} --> {format_time(end_time)}\n{text}\n\n")
+
+    # Tanınan metinleri çevirme
+    translations = translate_texts(recognized_texts)
+
+    # Altyazı dosyasını oluşturma
+    create_subtitle_file(translations, subtitle_file)
+
+    # Videoya altyazıları ekleme
+    add_subtitles_to_video(video_file, subtitle_file, output_video_with_subs)
