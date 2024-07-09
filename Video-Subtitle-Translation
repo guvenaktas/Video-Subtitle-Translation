@@ -86,7 +86,7 @@ def add_subtitles_to_video(video_file, subtitle_file, output_video_with_subs):
     subs = [s.strip().split('\n') for s in subtitles.split('\n\n') if s.strip()]
 
     def make_textclip(txt):
-        return TextClip(txt, fontsize=24, color='white', size=video.size, bg_color='black', method='caption')
+        return TextClip(txt, fontsize=24, color='white', size=(video.size[0] - 20, None), bg_color='black', method='caption').set_pos(('center', 'bottom'))
 
     sub_clips = []
     for sub in subs:
